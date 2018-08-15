@@ -1,5 +1,5 @@
 ﻿Imports System.Drawing
-
+Imports System.Threading
 Public Class Form1
     Friend mw, mh, mn As Integer
 
@@ -18,6 +18,9 @@ Public Class Form1
     Dim sf As StringFormat
     Dim perx, pery As Integer
     Dim die_when_wrong As Boolean = True
+
+
+
     Enum MapStatus
         empty = 0
         mine = 10
@@ -142,6 +145,7 @@ Public Class Form1
             .Height = Me.Height
             .BackColor = maincolor
             .Label2.Text = mremain
+            .Label1.Text = mtime.ToString("mm:ss")
         End With
         mbmp = New Bitmap(mw * perx, mh * pery)
         ReDim map(mh, mw)
@@ -169,7 +173,7 @@ Public Class Form1
             gr.DrawLine(New Pen(maincolor, 1), 0, y, 0 + mbmp.Width, y)
         Next j
         Draw()
-
+        Sweepinit()
     End Sub
     Private Sub Draw()
         Dim g As Graphics = Graphics.FromImage(mbmp)
@@ -353,4 +357,176 @@ Public Class Form1
         PictureBox1.Size = ClientSize
         PictureBox1.Image = showbmp
     End Sub
+    Dim atsw As Thread
+    Private Sub Form1_KeyUp(sender As Object, e As KeyEventArgs) Handles Me.KeyUp
+        If e.KeyCode = Keys.P Then
+            For j = 1 To mh
+                For i = 1 To mw
+                    updated(j, i) = True
+                Next i
+            Next j
+            atsw = New Thread(AddressOf AutoSweep)
+            atsw.Start()
+        End If
+    End Sub
+    Dim swmap(,) As Byte
+    Dim checked(,) As Boolean
+    Dim pressed(,) As Boolean
+    Dim updated(,) As Boolean
+    Enum SweepMapStatus
+        empty = 9
+        marked = 10
+        unknown = 11
+    End Enum
+    Private Sub Sweepinit()
+        ReDim swmap(mh, mw)
+        ReDim checked(mh, mw)
+        ReDim updated(mh, mw)
+        ReDim pressed(mh, mw)
+        For j = 1 To mh
+            For i = 1 To mw
+                checked(j, i) = False
+                updated(j, i) = True
+                pressed(j, i) = False
+            Next i
+        Next j
+    End Sub
+    Private Sub AutoSweep()
+        getsweepmap()
+        Dim sweepagain As Boolean = False
+        For j = 1 To mh
+            For i = 1 To mw
+                If checked(j, i) Then Continue For
+                Dim ans As Byte = swmap(j, i)
+                If ans = SweepMapStatus.marked Then
+                    '雷,不用搜索直接完成
+                    checked(j, i) = True
+                ElseIf ans = SweepMapStatus.empty Then
+                    '空格，把周围update，否则连锁开启时后续无法跟进
+                    For jy = j - 1 To j + 1
+                        For ix = i - 1 To i + 1
+                            If (ix < 1) OrElse (jy < 1) OrElse
+                                (ix > mw) OrElse (jy > mh) Then Continue For
+                            If (ix = i) AndAlso (jy = j) Then Continue For
+                            If checked(jy, ix) Then Continue For
+                            updated(jy, ix) = True
+                        Next ix
+                    Next jy
+                    checked(j, i) = True
+                ElseIf ans <> SweepMapStatus.unknown Then
+                    '数字，则开始搜索
+                    '先确定周围雷和未点开格子的数量
+                    Dim nmine, nunknown As Integer
+                    nmine = 0 : nunknown = 0
+                    Dim ubpos() As Point
+                    For jy = j - 1 To j + 1
+                        For ix = i - 1 To i + 1
+                            If (ix < 1) OrElse (jy < 1) OrElse
+                                (ix > mw) OrElse (jy > mh) Then Continue For
+                            If (ix = i) AndAlso (jy = j) Then Continue For
+                            Dim ans2 As Byte = swmap(jy, ix)
+                            If ans2 = SweepMapStatus.marked Then
+                                nmine += 1
+                            ElseIf ans2 = SweepMapStatus.unknown Then
+                                nunknown += 1
+                                '顺便记录未点开格子的位置
+                                ReDim Preserve ubpos(nunknown)
+                                ubpos(nunknown) = New Point(ix, jy)
+                            End If
+                        Next ix
+                    Next jy
+
+                    If (ans = nmine) And (nunknown > 0) Then
+                        '雷=数字  表示可以点开周围方块
+                        For l = 1 To nunknown
+                            Dim ux, uy As Integer
+                            ux = ubpos(l).X
+                            uy = ubpos(l).Y
+                            If pressed(uy, ux) Then Continue For
+                            ClickBlock(ubpos(l), 1)
+                            pressed(uy, ux) = True
+                            updated(uy, ux) = True '点开后有新的数字出现 需要识别
+                            sweepagain = True
+                        Next l
+                        checked(j, i) = True
+                    ElseIf (ans = nmine + nunknown) And (nunknown > 0) Then
+                        '把周围方块标雷
+                        For l = 1 To nunknown
+                            Dim ux, uy As Integer
+                            ux = ubpos(l).X
+                            uy = ubpos(l).Y
+                            If pressed(uy, ux) Then Continue For
+                            ClickBlock(ubpos(l), 2)
+                            pressed(uy, ux) = True
+                            updated(uy, ux) = True '标雷后可以指导其他数字 需要识别
+                            sweepagain = True
+                        Next l
+                        checked(j, i) = True
+                    End If
+                End If
+            Next i
+        Next j
+        If sweepagain Then
+            Thread.Sleep(200) '延时0.2s 必须 否则等不到ui线程更新就做完了
+            AutoSweep()
+            Thread.Sleep(200)
+            AutoSweep()
+        End If
+
+    End Sub
+    Private Sub getsweepmap()
+        For j = 1 To mh
+            For i = 1 To mw
+                If checked(j, i) Then Continue For
+                If Not updated(j, i) Then Continue For
+                updated(j, i) = False
+                Select Case kmap(j, i)
+                    Case KnowMapStatus.unknown
+                        swmap(j, i) = SweepMapStatus.unknown
+                    Case KnowMapStatus.marked
+                        swmap(j, i) = SweepMapStatus.marked
+                    Case KnowMapStatus.opened
+                        If map(j, i) = 0 Then
+                            swmap(j, i) = SweepMapStatus.empty
+                        Else
+                            swmap(j, i) = map(j, i)
+                        End If
+                End Select
+            Next i
+        Next j
+    End Sub
+    Private Declare Sub SetCursorPos Lib "user32" (ByVal x As Integer,
+                                                   ByVal y As Integer)
+    Private Declare Sub mouse_event Lib "user32" (ByVal dwFlags As Integer,
+                                                  ByVal dx As Integer,
+                                                  ByVal dy As Integer,
+                                                  ByVal cButtons As Integer,
+                                                  ByVal dwExtraInfo As Integer)
+    Const MOUSEEVENTF_LEFTDOWN = &H2
+    Const MOUSEEVENTF_LEFTUP = &H4
+    Const MOUSEEVENTF_RIGHTDOWN = &H8
+    Const MOUSEEVENTF_RIGHTUP = &H10
+
+    Private Sub ClickBlock(ByVal b As Point, cparam As Byte)
+        Dim cx, cy As Single
+        Dim px, py As Single
+        px = PictureBox1.Width / mw
+        py = PictureBox1.Height / mh
+        Dim margin, title As Integer
+        margin = (Me.Width - Me.ClientSize.Width) / 2
+        title = Me.Height - Me.ClientSize.Height - margin
+        cx = Me.Left + margin + PictureBox1.Left + px * (b.X - 1 + 0.5)
+        cy = Me.Top + title + PictureBox1.Top + py * (b.Y - 1 + 0.5)
+        SetCursorPos(cx, cy)
+        If cparam = 1 Then
+            mouse_event(MOUSEEVENTF_LEFTDOWN, cx, cy, 0, 0)
+            Thread.Sleep(20) '增加鼠标移动的视觉效果
+            mouse_event(MOUSEEVENTF_LEFTUP, cx, cy, 0, 0)
+        Else
+            mouse_event(MOUSEEVENTF_RIGHTDOWN, cx, cy, 0, 0)
+            Thread.Sleep(20)
+            mouse_event(MOUSEEVENTF_RIGHTUP, cx, cy, 0, 0)
+        End If
+    End Sub
+
 End Class
